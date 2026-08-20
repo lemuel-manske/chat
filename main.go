@@ -10,16 +10,6 @@ import (
 	"go.yaml.in/yaml/v4"
 )
 
-type Peer struct {
-	Port  string `yaml:"port"`
-	Alias string `yaml:"alias"`
-	Peers []Peer `yaml:"peers"`
-}
-
-func (p Peer) FormatPort() string {
-	return fmt.Sprintf(":%s", p.Port)
-}
-
 func readConfigFile() Peer {
 	args := os.Args[1:]
 
@@ -54,6 +44,16 @@ func readConfigFile() Peer {
 	return config
 }
 
+type Peer struct {
+	Port  string `yaml:"port"`
+	Alias string `yaml:"alias"`
+	Peers []Peer `yaml:"peers"`
+}
+
+func (p Peer) FormatPort() string {
+	return fmt.Sprintf(":%s", p.Port)
+}
+
 func createServer(peer Peer) {
 	ln, err := net.Listen( // cria o servidor TCP
 		"tcp",
@@ -67,38 +67,6 @@ func createServer(peer Peer) {
 	go handleServerConnections(ln, peer)
 }
 
-func handleServerConnections(ln net.Listener, peer Peer) {
-	for {
-		conn, err := ln.Accept()
-
-		if err != nil {
-			fmt.Printf("Error accepting connection: %v\n", err)
-			continue
-		}
-
-		fmt.Printf("Connection accepted from: %s\n", conn.RemoteAddr().String())
-
-		go handleServerConnection(conn, peer)
-	}
-}
-
-func handleServerConnection(conn net.Conn, peer Peer) {
-	defer conn.Close()
-
-	var buffer = make([]byte, 1024)
-
-	for {
-		n, err := conn.Read(buffer)
-
-		if err != nil {
-			fmt.Printf("Error reading from connection: %v\n", err)
-			break
-		}
-
-		fmt.Printf("%s: %s\n", peer.Alias, string(buffer[:n]))
-	}
-}
-
 func createClient(peer Peer) {
 	fmt.Printf("Connecting to peer: %s\n", peer.Alias)
 
@@ -109,35 +77,51 @@ func createClient(peer Peer) {
 		)
 
 		if err != nil {
-			fmt.Printf(
-				"Could not connect to %s on %s: %v\n",
-				peer.Alias,
-				peer.FormatPort(),
-				err,
-			)
-
 			time.Sleep(5 * time.Second)
 			continue
 		}
 
-		handleClientConnection(conn, peer)
+		go handleClientConnection(conn)
 	}
 }
 
-func handleClientConnection(conn net.Conn, peer Peer) {
+func handleServerConnections(ln net.Listener, peer Peer) {
+	for {
+		conn, err := ln.Accept()
+
+		if err != nil {
+			continue
+		}
+
+		fmt.Printf("Connection accepted")
+
+		go handleServerConnection(conn)
+	}
+}
+
+func handleServerConnection(conn net.Conn) {
+	defer conn.Close()
+
+	var buffer = make([]byte, 1024)
+
+	for {
+		n, err := conn.Read(buffer)
+
+		if err != nil {
+			break
+		}
+
+		fmt.Printf(string(buffer[:n]))
+	}
+}
+
+func handleClientConnection(conn net.Conn) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for scanner.Scan() {
-		text := scanner.Text()
-
-		_, err := conn.Write([]byte(text))
-
-		if err != nil {
-			fmt.Printf("Error writing to connection: %v\n", err)
-			break
-		}
+		conn.Write([]byte(scanner.Text()))
 	}
 }
 
