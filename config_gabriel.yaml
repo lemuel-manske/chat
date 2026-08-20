@@ -1,0 +1,5 @@
+alias: gabriel
+port: 8083
+peers:
+  - alias: kaue
+    port: 8080
