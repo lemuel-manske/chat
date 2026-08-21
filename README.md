@@ -13,6 +13,9 @@ cd chat
 
 # Use
 ./chat <config_file>
+
+# Exemplo
+./chat configs/config_kaue.yaml
 ```
 
 ## Compilando
