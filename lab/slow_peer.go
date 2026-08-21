@@ -6,29 +6,39 @@ import (
 	"time"
 )
 
+/*
+ * Um slow peer é um peer que não lê nada da conexão, causando lentidão na rede,
+ * para simular um peer mais lento.
+ **/
+
+const port = 9090
+
 func main() {
-	ln, err := net.Listen("tcp", ":9090")
+	ln, err := net.Listen("tcp", ":"+fmt.Sprint(port))
+
 	if err != nil {
 		panic(err)
 	}
 
-	fmt.Println("slow peer ouvindo em :9090")
+	fmt.Printf("slow peer ouvindo em :%d\n", port)
 
 	for {
 		conn, err := ln.Accept()
+
 		if err != nil {
 			continue
 		}
 
 		fmt.Println("conexão aceita")
 
-		go func(c net.Conn) {
-			defer c.Close()
+		go sleeps(conn)
+	}
+}
 
-			// propositalmente NÃO lê nada da conexão
-			for {
-				time.Sleep(time.Minute)
-			}
-		}(conn)
+func sleeps(c net.Conn) {
+	defer c.Close()
+
+	for {
+		time.Sleep(time.Minute) // propositalmente NÃO lê nada da conexão
 	}
 }
