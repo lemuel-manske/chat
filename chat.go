@@ -17,6 +17,9 @@ const sleepDuration = 5 * time.Second
 
 const listCmd = "/list"
 const quitCmd = "/quit"
+const messageCmd = "/msg "
+
+const messageCmdFormat = messageCmd + "%s %s\n" // alias + message
 
 const pingMessagePrefix = "PING"
 const pingMessageFormat = pingMessagePrefix + ":%s\n" // alias
@@ -130,6 +133,8 @@ func handleServerConnection(conn net.Conn) {
 
 	scanner := bufio.NewScanner(conn)
 
+	gracefulClose := false
+
 	for scanner.Scan() {
 		msg := scanner.Text()
 
@@ -156,7 +161,7 @@ func handleServerConnection(conn net.Conn) {
 
 			removeConn(alias)
 
-			conn.Close()
+			gracefulClose = true
 
 			return
 		}
@@ -164,7 +169,7 @@ func handleServerConnection(conn net.Conn) {
 		fmt.Println(msg)
 	}
 
-	if scanner.Err() != nil {
+	if !gracefulClose {
 		fmt.Printf("Connection lost with %s\n", alias)
 	}
 
@@ -213,6 +218,8 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 
 		scanner := bufio.NewScanner(conn)
 
+		gracefulClose := false
+
 		for scanner.Scan() {
 			msg := scanner.Text()
 
@@ -231,13 +238,15 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 
 				conn.Close()
 
+				gracefulClose = true
+
 				return
 			}
 
 			fmt.Println(msg)
 		}
 
-		if scanner.Err() != nil {
+		if !gracefulClose {
 			fmt.Printf("Connection lost with %s\n", peer.Alias)
 		}
 
@@ -285,15 +294,17 @@ func broadcastStdin(host HostPeer) {
 }
 
 func handleCommand(msg string, host HostPeer) {
-	switch msg {
-	case listCmd:
+	if msg == listCmd {
 		tempPeers := copyPeers()
 
 		for alias := range tempPeers {
 			fmt.Println(alias)
 		}
 
-	case quitCmd:
+		return
+	}
+
+	if msg == quitCmd {
 		tempPeers := copyPeers()
 
 		for _, conn := range tempPeers {
@@ -311,23 +322,63 @@ func handleCommand(msg string, host HostPeer) {
 		}
 
 		os.Exit(0)
-
-	default:
-		fmt.Println("Unknown command")
 	}
+
+	if msg == strings.TrimSpace(messageCmd) {
+		fmt.Println("Usage: /msg <alias> <message>")
+		return
+	}
+
+	if strings.HasPrefix(msg, messageCmd) {
+		msgParts := strings.SplitN(msg, " ", 3)
+
+		if len(msgParts) < 3 {
+			fmt.Println("Usage: /msg <alias> <message>")
+			return
+		}
+
+		destinatary := msgParts[1]
+		message := msgParts[2]
+
+		tempPeers := copyPeers()
+
+		conn, ok := tempPeers[destinatary]
+
+		if !ok {
+			fmt.Printf("No connection with %s\n", destinatary)
+			return
+		}
+
+		renewWriteDeadline(conn)
+
+		_, err := fmt.Fprintf(
+			conn,
+			messageFormat,
+			host.Alias,
+			message,
+		)
+
+		if err != nil {
+			conn.Close()
+		}
+
+		return
+	}
+
+	fmt.Println("Unknown command")
 }
 
-func heartbeatLoop() {
+func heartbeatLoop(host HostPeer) {
 	for {
 		tempPeers := copyPeers()
 
-		for alias, conn := range tempPeers {
+		for _, conn := range tempPeers {
 			renewWriteDeadline(conn)
 
 			_, err := fmt.Fprintf(
 				conn,
 				pingMessageFormat,
-				alias,
+				host.Alias,
 			)
 
 			if err != nil {

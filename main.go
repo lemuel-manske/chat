@@ -3,8 +3,7 @@ package main
 func main() {
 	config := parseArgs()
 
-	go heartbeatLoop()
-
+	go heartbeatLoop(config)
 	go createServer(config)
 	go connectToPeers(config)
 	go broadcastStdin(config)

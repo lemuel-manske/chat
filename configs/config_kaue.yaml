@@ -1,3 +1,7 @@
 alias: kaue
 port: 8080
 peers:
+  - alias: gabriel
+    port: 8083
+  - alias: slow
+    port: 9090
