@@ -9,78 +9,101 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"go.yaml.in/yaml/v4"
 )
 
-const dialTimeout = 3 * time.Second
+const networkTimeout = 10 * time.Second
+const pingTimeout = 3 * time.Second
 const sleepDuration = 5 * time.Second
 
-const handshakePrefix = "HELLO"
-const handshakeMessage = handshakePrefix + ":%s:%s\n" // alias + port
+const listCmd = "/list"
+const quitCmd = "/quit"
+
+const pingMessagePrefix = "PING"
+const pingMessageFormat = pingMessagePrefix + ":%s\n" // alias
+
+const byeMessagePrefix = "BYE"
+const byeMessageFormat = byeMessagePrefix + ":%s\n" // alias
+
+const handshakeMessagePrefix = "HELLO"
+const handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s\n" // alias + port
 
 const messageFormat = "[%s] %s\n" // alias + message
 
 var peers = make(map[string]net.Conn)
 var peersMutex = sync.Mutex{}
 
-type Peer struct {
-	Alias string `yaml:"alias"`
-	Port  string `yaml:"port"`
+func renewReadDeadline(conn net.Conn) {
+	conn.SetReadDeadline(time.Now().Add(networkTimeout))
 }
 
-type HostPeer struct {
-	Port  string `yaml:"port"`
-	Alias string `yaml:"alias"`
-	Peers []Peer `yaml:"peers"`
+func renewWriteDeadline(conn net.Conn) {
+	conn.SetWriteDeadline(time.Now().Add(networkTimeout))
 }
 
-func (p HostPeer) FormatPort() string {
-	return fmt.Sprintf(":%s", p.Port)
+func persistConn(conn net.Conn, alias string) {
+	peersMutex.Lock()
+	peers[alias] = conn
+	peersMutex.Unlock()
 }
 
-func (p Peer) FormatPort() string {
-	return fmt.Sprintf(":%s", p.Port)
+func removeConn(alias string) {
+	peersMutex.Lock()
+	delete(peers, alias)
+	peersMutex.Unlock()
 }
 
-func parseArgs() HostPeer {
-	args := os.Args[1:]
+func copyPeers() map[string]net.Conn {
+	tempPeers := make(map[string]net.Conn)
 
-	if len(args) < 1 {
-		fmt.Println("Usage: chat <config_file>")
-		os.Exit(1)
-	}
+	peersMutex.Lock()
+	maps.Copy(tempPeers, peers)
+	peersMutex.Unlock()
 
-	if len(args) > 1 {
-		fmt.Println("Usage: chat <config_file>")
-		os.Exit(1)
-	}
+	return tempPeers
+}
 
-	yamlFile := args[0]
+func shouldSkipConnection(peer Peer, host HostPeer) bool {
+	return peer.Alias < host.Alias
+}
 
-	yamlData, err := os.ReadFile(yamlFile)
+func performHandshake(conn net.Conn, host HostPeer) error {
+	handshake := fmt.Sprintf(
+		handshakeMessageFormat,
+		host.Alias,
+		host.Port,
+	)
+
+	conn.SetWriteDeadline(time.Now().Add(networkTimeout))
+
+	_, err := conn.Write([]byte(handshake))
 
 	if err != nil {
-		fmt.Printf("Error reading YAML file: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 
-	config := HostPeer{}
-
-	err = yaml.Unmarshal(yamlData, &config)
-
-	if err != nil {
-		fmt.Printf("Error parsing YAML file: %v\n", err)
-		os.Exit(1)
-	}
-
-	return config
+	return nil
 }
 
-func createServer(peer HostPeer) {
+func isHandshake(msg string) bool {
+	return strings.HasPrefix(msg, handshakeMessagePrefix)
+}
+
+func isPing(msg string) bool {
+	return strings.HasPrefix(msg, pingMessagePrefix)
+}
+
+func isBye(msg string) bool {
+	return strings.HasPrefix(msg, byeMessagePrefix)
+}
+
+func isCommand(msg string) bool {
+	return strings.HasPrefix(msg, "/")
+}
+
+func createServer(host HostPeer) {
 	ln, err := net.Listen(
 		"tcp",
-		peer.FormatPort(),
+		host.FormatPort(),
 	)
 
 	if err != nil {
@@ -103,33 +126,49 @@ func handleServerConnection(conn net.Conn) {
 
 	var alias string
 
+	renewReadDeadline(conn)
+
 	scanner := bufio.NewScanner(conn)
 
 	for scanner.Scan() {
 		msg := scanner.Text()
 
-		if strings.HasPrefix(msg, handshakePrefix) {
+		renewReadDeadline(conn)
+
+		if isHandshake(msg) {
 			msgParts := strings.SplitN(msg, ":", 3)
 
 			alias = msgParts[1]
 
-			peersMutex.Lock()
-			peers[alias] = conn
-			peersMutex.Unlock()
+			persistConn(conn, alias)
 
 			fmt.Printf("Connection accepted from %s\n", alias)
-		} else {
-			fmt.Println(msg)
+
+			continue
 		}
+
+		if isPing(msg) {
+			continue
+		}
+
+		if isBye(msg) {
+			fmt.Printf("Connection closed by %s\n", alias)
+
+			removeConn(alias)
+
+			conn.Close()
+
+			return
+		}
+
+		fmt.Println(msg)
 	}
 
 	if scanner.Err() != nil {
 		fmt.Printf("Connection lost with %s\n", alias)
 	}
 
-	peersMutex.Lock()
-	delete(peers, alias)
-	peersMutex.Unlock()
+	removeConn(alias)
 }
 
 func connectToPeers(host HostPeer) {
@@ -142,16 +181,12 @@ func connectToPeers(host HostPeer) {
 	}
 }
 
-func shouldSkipConnection(peer Peer, host HostPeer) bool {
-	return peer.Alias < host.Alias
-}
-
 func maintainPeerConnection(peer Peer, host HostPeer) {
 	for {
 		conn, err := net.DialTimeout(
 			"tcp",
 			peer.FormatPort(),
-			dialTimeout,
+			networkTimeout,
 		)
 
 		if err != nil {
@@ -160,25 +195,43 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 			continue
 		}
 
-		handshake := fmt.Sprintf(
-			handshakeMessage,
-			host.Alias,
-			host.Port,
-		)
+		err = performHandshake(conn, host)
 
-		conn.Write([]byte(handshake))
+		if err != nil {
+			conn.Close()
 
-		peersMutex.Lock()
-		peers[peer.Alias] = conn
-		peersMutex.Unlock()
+			time.Sleep(sleepDuration)
+
+			continue
+		}
+
+		fmt.Printf("Connection established with %s\n", peer.Alias)
+
+		persistConn(conn, peer.Alias)
+
+		renewReadDeadline(conn)
 
 		scanner := bufio.NewScanner(conn)
 
 		for scanner.Scan() {
 			msg := scanner.Text()
 
-			if strings.HasPrefix(msg, handshakePrefix) {
+			renewReadDeadline(conn)
+
+			shouldSkip := isHandshake(msg) || isPing(msg)
+
+			if shouldSkip {
 				continue
+			}
+
+			if isBye(msg) {
+				fmt.Printf("Connection closed by %s\n", peer.Alias)
+
+				removeConn(peer.Alias)
+
+				conn.Close()
+
+				return
 			}
 
 			fmt.Println(msg)
@@ -188,9 +241,7 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 			fmt.Printf("Connection lost with %s\n", peer.Alias)
 		}
 
-		peersMutex.Lock()
-		delete(peers, peer.Alias)
-		peersMutex.Unlock()
+		removeConn(peer.Alias)
 
 		conn.Close()
 
@@ -198,25 +249,33 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 	}
 }
 
-func broadcastStdin(peer HostPeer) {
+func broadcastStdin(host HostPeer) {
 	scanner := bufio.NewScanner(os.Stdin)
 
 	for scanner.Scan() {
 		text := scanner.Text()
 
-		tempPeers := make(map[string]net.Conn)
+		if isCommand(text) {
+			handleCommand(text, host)
 
-		peersMutex.Lock()
-		maps.Copy(tempPeers, peers)
-		peersMutex.Unlock()
+			continue
+		}
+
+		tempPeers := copyPeers()
 
 		for _, conn := range tempPeers {
-			fmt.Fprintf(
+			renewWriteDeadline(conn)
+
+			_, err := fmt.Fprintf(
 				conn,
 				messageFormat,
-				peer.Alias,
+				host.Alias,
 				text,
 			)
+
+			if err != nil {
+				conn.Close()
+			}
 		}
 	}
 
@@ -225,12 +284,57 @@ func broadcastStdin(peer HostPeer) {
 	}
 }
 
-func main() {
-	config := parseArgs()
+func handleCommand(msg string, host HostPeer) {
+	switch msg {
+	case listCmd:
+		tempPeers := copyPeers()
 
-	go createServer(config)
-	go connectToPeers(config)
-	go broadcastStdin(config)
+		for alias := range tempPeers {
+			fmt.Println(alias)
+		}
 
-	select {}
+	case quitCmd:
+		tempPeers := copyPeers()
+
+		for _, conn := range tempPeers {
+			renewWriteDeadline(conn)
+
+			_, err := fmt.Fprintf(
+				conn,
+				byeMessageFormat,
+				host.Alias,
+			)
+
+			if err != nil {
+				conn.Close()
+			}
+		}
+
+		os.Exit(0)
+
+	default:
+		fmt.Println("Unknown command")
+	}
+}
+
+func heartbeatLoop() {
+	for {
+		tempPeers := copyPeers()
+
+		for alias, conn := range tempPeers {
+			renewWriteDeadline(conn)
+
+			_, err := fmt.Fprintf(
+				conn,
+				pingMessageFormat,
+				alias,
+			)
+
+			if err != nil {
+				conn.Close()
+			}
+		}
+
+		time.Sleep(pingTimeout)
+	}
 }
