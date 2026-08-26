@@ -33,7 +33,15 @@ const pingMessageFormat = pingMessagePrefix + ":%s"                 // alias
 
 const messageFormat = "[%s] %s" // alias + message
 
-var peers = make(map[string]net.Conn)
+const peerQueueSize = 1024
+
+type PeerConnection struct {
+	Conn   net.Conn
+	SendCh chan []byte
+	Done   chan struct{}
+}
+
+var peers = make(map[string]*PeerConnection)
 var peersMutex = sync.Mutex{}
 
 var knownPeers = make(map[string]Peer)
@@ -52,26 +60,20 @@ func renewWriteDeadline(conn net.Conn) {
 	conn.SetWriteDeadline(time.Now().Add(networkTimeout))
 }
 
-func persistConn(conn net.Conn, alias string) {
+func copyPeers() map[string]*PeerConnection {
 	peersMutex.Lock()
-	peers[alias] = conn
-	peersMutex.Unlock()
-}
+	defer peersMutex.Unlock()
 
-func removeConn(alias string) {
-	peersMutex.Lock()
-	delete(peers, alias)
-	peersMutex.Unlock()
-}
+	copy := make(
+		map[string]*PeerConnection,
+		len(peers),
+	)
 
-func copyPeers() map[string]net.Conn {
-	tempPeers := make(map[string]net.Conn)
+	for alias, pc := range peers {
+		copy[alias] = pc
+	}
 
-	peersMutex.Lock()
-	maps.Copy(tempPeers, peers)
-	peersMutex.Unlock()
-
-	return tempPeers
+	return copy
 }
 
 func copyKnownPeers() map[string]Peer {
@@ -125,6 +127,92 @@ func shouldMaintainOutbound(host HostPeer, peer Peer) bool {
 
 // main functions
 
+func persistConn(conn net.Conn, alias string) *PeerConnection {
+	pc := &PeerConnection{
+		Conn:   conn,
+		SendCh: make(chan []byte, peerQueueSize),
+		Done:   make(chan struct{}),
+	}
+
+	peersMutex.Lock()
+
+	old := peers[alias]
+	peers[alias] = pc
+
+	peersMutex.Unlock()
+
+	if old != nil {
+		old.Conn.Close()
+	}
+
+	go peerWriter(alias, pc)
+
+	return pc
+}
+
+func peerWriter(alias string, pc *PeerConnection) {
+	defer pc.Conn.Close()
+
+	for {
+		select {
+		case payload := <-pc.SendCh:
+			renewWriteDeadline(pc.Conn)
+
+			if err := writeFrame(pc.Conn, payload); err != nil {
+				removeConnIfCurrent(alias, pc)
+				return
+			}
+
+		case <-pc.Done:
+			return
+		}
+	}
+}
+
+func removeConnIfCurrent(
+	alias string,
+	pc *PeerConnection,
+) {
+	peersMutex.Lock()
+	defer peersMutex.Unlock()
+
+	current, ok := peers[alias]
+
+	if !ok || current != pc {
+		return
+	}
+
+	delete(peers, alias)
+
+	select {
+	case <-pc.Done:
+	default:
+		close(pc.Done)
+	}
+}
+
+func enqueueMessage(
+	alias string,
+	pc *PeerConnection,
+	payload []byte,
+) bool {
+	select {
+	case pc.SendCh <- payload:
+		return true
+
+	default:
+		fmt.Printf(
+			"Peer %s is too slow; disconnecting\n",
+			alias,
+		)
+
+		removeConnIfCurrent(alias, pc)
+		pc.Conn.Close()
+
+		return false
+	}
+}
+
 func createServer(host HostPeer) {
 	ln, err := net.Listen(
 		"tcp",
@@ -150,10 +238,9 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 	defer conn.Close()
 
 	var alias string
+	var pc *PeerConnection
 
 	renewReadDeadline(conn)
-
-	gracefulClose := false
 
 	for {
 		renewReadDeadline(conn)
@@ -191,7 +278,7 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 				return
 			}
 
-			persistConn(conn, alias)
+			pc = persistConn(conn, alias)
 
 			fmt.Printf("Connection accepted from %s\n", alias)
 
@@ -205,9 +292,9 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 		if isBye(msg) {
 			fmt.Printf("Connection closed by %s\n", alias)
 
-			removeConn(alias)
-
-			gracefulClose = true
+			if pc != nil {
+				removeConnIfCurrent(alias, pc)
+			}
 
 			return
 		}
@@ -228,11 +315,14 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 		fmt.Println(msg)
 	}
 
-	if !gracefulClose {
-		fmt.Printf("Connection lost with %s\n", alias)
-	}
+	if pc != nil {
+		fmt.Printf(
+			"Connection lost with %s\n",
+			alias,
+		)
 
-	removeConn(alias)
+		removeConnIfCurrent(alias, pc)
+	}
 }
 
 func connectToPeers(host HostPeer) {
@@ -351,7 +441,7 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 
 		fmt.Printf("Connection established with %s\n", peer.Alias)
 
-		persistConn(conn, peer.Alias)
+		pc := persistConn(conn, peer.Alias)
 
 		renewReadDeadline(conn)
 
@@ -388,7 +478,7 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 			if isBye(msg) {
 				fmt.Printf("Connection closed by %s\n", peer.Alias)
 
-				removeConn(peer.Alias)
+				removeConnIfCurrent(peer.Alias, pc)
 
 				conn.Close()
 
@@ -404,7 +494,7 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 			fmt.Printf("Connection lost with %s\n", peer.Alias)
 		}
 
-		removeConn(peer.Alias)
+		removeConnIfCurrent(peer.Alias, pc)
 
 		conn.Close()
 
@@ -446,15 +536,14 @@ func broadcastMessage(text string, host HostPeer) {
 		text,
 	)
 
-	for _, conn := range tempPeers {
-		renewWriteDeadline(conn)
+	payload := []byte(message)
 
-		if err := writeFrame(
-			conn,
-			[]byte(message),
-		); err != nil {
-			conn.Close()
-		}
+	for alias, pc := range tempPeers {
+		enqueueMessage(
+			alias,
+			pc,
+			payload,
+		)
 	}
 }
 
@@ -472,19 +561,18 @@ func handleCommand(msg string, host HostPeer) {
 	if msg == quitCmd {
 		tempPeers := copyPeers()
 
-		for _, conn := range tempPeers {
-			renewWriteDeadline(conn)
+		byeMsg := fmt.Sprintf(
+			byeMessageFormat,
+			host.Alias,
+		)
 
-			payload := fmt.Sprintf(
-				byeMessageFormat,
-				host.Alias,
-			)
+		payload := []byte(byeMsg)
 
-			if err := writeFrame(
-				conn,
-				[]byte(payload),
-			); err != nil {
-				conn.Close()
+		for _, pc := range tempPeers {
+			renewWriteDeadline(pc.Conn)
+
+			if err := writeFrame(pc.Conn, payload); err != nil {
+				pc.Conn.Close()
 			}
 		}
 
@@ -509,29 +597,27 @@ func handleCommand(msg string, host HostPeer) {
 
 		tempPeers := copyPeers()
 
-		conn, ok := tempPeers[destinatary]
+		pc, ok := tempPeers[destinatary]
 
 		if !ok {
 			fmt.Printf("No connection with %s\n", destinatary)
+
 			return
 		}
 
-		renewWriteDeadline(conn)
-
-		payload := fmt.Sprintf(
+		msg := fmt.Sprintf(
 			messageFormat,
 			host.Alias,
 			message,
 		)
 
-		renewWriteDeadline(conn)
+		payload := []byte(msg)
 
-		if err := writeFrame(
-			conn,
-			[]byte(payload),
-		); err != nil {
-			conn.Close()
-		}
+		enqueueMessage(
+			destinatary,
+			pc,
+			payload,
+		)
 
 		return
 	}
@@ -543,20 +629,19 @@ func heartbeatLoop(host HostPeer) {
 	for {
 		tempPeers := copyPeers()
 
-		for _, conn := range tempPeers {
-			renewWriteDeadline(conn)
+		message := fmt.Sprintf(
+			pingMessageFormat,
+			host.Alias,
+		)
 
-			payload := fmt.Sprintf(
-				pingMessageFormat,
-				host.Alias,
+		payload := []byte(message)
+
+		for alias, pc := range tempPeers {
+			enqueueMessage(
+				alias,
+				pc,
+				payload,
 			)
-
-			if err := writeFrame(
-				conn,
-				[]byte(payload),
-			); err != nil {
-				conn.Close()
-			}
 		}
 
 		time.Sleep(pingTimeout)
@@ -620,15 +705,14 @@ func announcePeer(peer Peer) {
 		peer.Port,
 	)
 
-	for _, conn := range tempPeers {
-		renewWriteDeadline(conn)
+	payload := []byte(message)
 
-		if err := writeFrame(
-			conn,
-			[]byte(message),
-		); err != nil {
-			conn.Close()
-		}
+	for alias, pc := range tempPeers {
+		enqueueMessage(
+			alias,
+			pc,
+			payload,
+		)
 	}
 }
 
@@ -645,6 +729,7 @@ func sendKnownPeers(conn net.Conn) {
 
 		renewWriteDeadline(conn)
 
+		// não enfileirar, pois é uma conexão temporária de bootstrap
 		if err := writeFrame(
 			conn,
 			[]byte(message),

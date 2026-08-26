@@ -65,3 +65,13 @@ go test ./...
 ## Releases
 
 Versões compiladas para diferentes sistemas operacionais podem ser disponibilizadas pela página de [Releases](https://github.com/lemuel-manske/chat/releases).
+
+## Política para participantes lentos
+
+Cada conexão possui uma fila de saída limitada e uma `goroutine` dedicada à escrita no socket.
+
+O envio para os participantes é não bloqueante; Se a fila de saída de um participante atingir 
+o limite configurado, esse participante é considerado lento e sua conexão é encerrada.
+
+Essa política foi escolhida para impedir que um participante que pare de consumir mensagens 
+bloqueie ou aumente a latência da conversa dos demais participantes.
