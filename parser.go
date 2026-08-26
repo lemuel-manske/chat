@@ -16,23 +16,17 @@ type Peer struct { // peer
 }
 
 type HostPeer struct { // servidor
-	Alias string `yaml:"alias"`
-
+	Alias   string `yaml:"alias"`
 	Address string `yaml:"address"`
 	Port    string `yaml:"port"`
-
-	Peers []Peer `yaml:"peers"`
+	Peers   []Peer `yaml:"peers"`
 }
 
-const localhostAddr = "127.0.0.1"
-
-func (p HostPeer) Addr() string {
-	// servidor escuta em todas as interfaces de rede
-
-	return fmt.Sprintf(":%s", p.Port)
+func (p HostPeer) AddrNPort() string {
+	return net.JoinHostPort(p.Address, p.Port)
 }
 
-func (p Peer) Addr() string {
+func (p Peer) AddrNPort() string {
 	return net.JoinHostPort(p.Address, p.Port)
 }
 

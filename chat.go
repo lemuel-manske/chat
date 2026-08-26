@@ -37,7 +37,7 @@ const peerQueueSize = 1024
 
 type PeerConnection struct {
 	Conn   net.Conn
-	SendCh chan []byte
+	SendCh chan []byte // canal de envio
 	Done   chan struct{}
 }
 
@@ -122,6 +122,8 @@ func isCommand(msg string) bool {
 }
 
 func shouldMaintainOutbound(host HostPeer, peer Peer) bool {
+	// para conexões definitivas, o alias menor deve ser quem iniciou (alfabeticamente)
+
 	return host.Alias < peer.Alias
 }
 
@@ -191,6 +193,8 @@ func removeConnIfCurrent(
 	}
 }
 
+// todas as rotinas de envio de mensagens devem passar por aqui,
+// para evitar que um peer lento bloqueie o envio para outros peers
 func enqueueMessage(
 	alias string,
 	pc *PeerConnection,
@@ -216,7 +220,7 @@ func enqueueMessage(
 func createServer(host HostPeer) {
 	ln, err := net.Listen(
 		"tcp",
-		host.Addr(),
+		host.AddrNPort(),
 	)
 
 	if err != nil {
@@ -327,8 +331,6 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 
 func connectToPeers(host HostPeer) {
 	for _, peer := range host.Peers {
-		peer := peer
-
 		if shouldMaintainOutbound(host, peer) {
 			startDialer(peer, host)
 			continue
@@ -393,7 +395,7 @@ func bootstrapPeer(peer Peer, host HostPeer) {
 	for {
 		conn, err := net.DialTimeout(
 			"tcp",
-			peer.Addr(),
+			peer.AddrNPort(),
 			networkTimeout,
 		)
 
@@ -417,7 +419,7 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 	for {
 		conn, err := net.DialTimeout(
 			"tcp",
-			peer.Addr(),
+			peer.AddrNPort(),
 			networkTimeout,
 		)
 
@@ -662,9 +664,9 @@ func initializeKnownPeers(host HostPeer) {
 }
 
 func addKnownPeer(peer Peer, host HostPeer) bool {
-	if peer.Alias == "" ||
-		peer.Alias == host.Alias ||
-		peer.Port == "" {
+	isValid := peer.Alias != "" && peer.Alias != host.Alias && peer.Port != ""
+
+	if !isValid {
 		return false
 	}
 
@@ -672,9 +674,11 @@ func addKnownPeer(peer Peer, host HostPeer) bool {
 
 	current, exists := knownPeers[peer.Alias]
 
-	if exists &&
+	isSame := exists &&
 		current.Address == peer.Address &&
-		current.Port == peer.Port {
+		current.Port == peer.Port
+
+	if isSame {
 		knownPeersMutex.Unlock()
 		return false
 	}
@@ -685,7 +689,7 @@ func addKnownPeer(peer Peer, host HostPeer) bool {
 	fmt.Printf(
 		"Peer discovered: %s (%s)\n",
 		peer.Alias,
-		peer.Addr(),
+		peer.AddrNPort(),
 	)
 
 	maybeStartDialer(peer, host)
