@@ -1,12 +1,14 @@
 package main
 
 func main() {
-	config := parseArgs()
+	host := parseArgs()
 
-	go heartbeatLoop(config)
-	go createServer(config)
-	go connectToPeers(config)
-	go broadcastStdin(config)
+	initializeKnownPeers(host)
+
+	go heartbeatLoop(host)
+	go createServer(host)
+	go connectToPeers(host)
+	go broadcastStdin(host)
 
 	select {}
 }

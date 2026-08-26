@@ -2,28 +2,38 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"strings"
 
 	"go.yaml.in/yaml/v4"
 )
 
-type Peer struct {
-	Alias string `yaml:"alias"`
-	Port  string `yaml:"port"`
+type Peer struct { // peer
+	Alias   string `yaml:"alias"`
+	Address string `yaml:"address"`
+	Port    string `yaml:"port"`
 }
 
-type HostPeer struct {
-	Port  string `yaml:"port"`
+type HostPeer struct { // servidor
 	Alias string `yaml:"alias"`
+
+	Address string `yaml:"address"`
+	Port    string `yaml:"port"`
+
 	Peers []Peer `yaml:"peers"`
 }
 
-func (p HostPeer) FormatPort() string {
+const localhostAddr = "127.0.0.1"
+
+func (p HostPeer) Addr() string {
+	// servidor escuta em todas as interfaces de rede
+
 	return fmt.Sprintf(":%s", p.Port)
 }
 
-func (p Peer) FormatPort() string {
-	return fmt.Sprintf(":%s", p.Port)
+func (p Peer) Addr() string {
+	return net.JoinHostPort(p.Address, p.Port)
 }
 
 func parseArgs() HostPeer {
@@ -58,4 +68,26 @@ func parseArgs() HostPeer {
 	}
 
 	return config
+}
+
+func parsePeerMessage(msg, prefix string) (Peer, bool) {
+	parts := strings.SplitN(msg, ":", 4)
+
+	if len(parts) != 4 || parts[0] != prefix {
+		return Peer{}, false
+	}
+
+	alias := strings.TrimSpace(parts[1])
+	address := strings.TrimSpace(parts[2])
+	port := strings.TrimSpace(parts[3])
+
+	if alias == "" || port == "" {
+		return Peer{}, false
+	}
+
+	return Peer{
+		Alias:   alias,
+		Address: address,
+		Port:    port,
+	}, true
 }

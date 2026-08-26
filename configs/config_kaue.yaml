@@ -1,7 +1,7 @@
 alias: kaue
+address: '127.0.0.1'
 port: 8080
 peers:
   - alias: gabriel
+    address: '127.0.0.1'
     port: 8083
-  - alias: slow
-    port: 9090

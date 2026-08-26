@@ -1,5 +1,4 @@
 alias: lucas
+address: "127.0.0.1"
 port: 8081
-peers:
-  - alias: kaue
-    port: 8080
+peers: []

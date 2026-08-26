@@ -1,5 +1,7 @@
 alias: gabriel
+address: '127.0.0.1'
 port: 8083
 peers:
-  - alias: kaue
-    port: 8080
+  - alias: fabio
+    address: '127.0.0.1'
+    port: 8082

@@ -28,12 +28,23 @@ const byeMessagePrefix = "BYE"
 const byeMessageFormat = byeMessagePrefix + ":%s\n" // alias
 
 const handshakeMessagePrefix = "HELLO"
-const handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s\n" // alias + port
+const handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s\n" // alias + address + port
+
+const peerMessagePrefix = "PEER"
+const peerMessageFormat = peerMessagePrefix + ":%s:%s:%s\n" // alias + address + port
 
 const messageFormat = "[%s] %s\n" // alias + message
 
 var peers = make(map[string]net.Conn)
 var peersMutex = sync.Mutex{}
+
+var knownPeers = make(map[string]Peer)
+var knownPeersMutex = sync.Mutex{}
+
+var dialers = make(map[string]bool)
+var dialersMutex = sync.Mutex{}
+
+// helpers
 
 func renewReadDeadline(conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(networkTimeout))
@@ -65,48 +76,62 @@ func copyPeers() map[string]net.Conn {
 	return tempPeers
 }
 
-func shouldSkipConnection(peer Peer, host HostPeer) bool {
-	return peer.Alias < host.Alias
+func copyKnownPeers() map[string]Peer {
+	tempKnownPeers := make(map[string]Peer)
+
+	knownPeersMutex.Lock()
+	maps.Copy(tempKnownPeers, knownPeers)
+	knownPeersMutex.Unlock()
+
+	return tempKnownPeers
 }
 
 func performHandshake(conn net.Conn, host HostPeer) error {
+	address := host.Address
+
 	handshake := fmt.Sprintf(
 		handshakeMessageFormat,
 		host.Alias,
+		address,
 		host.Port,
 	)
 
-	conn.SetWriteDeadline(time.Now().Add(networkTimeout))
+	renewWriteDeadline(conn)
 
 	_, err := conn.Write([]byte(handshake))
-
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
 func isHandshake(msg string) bool {
-	return strings.HasPrefix(msg, handshakeMessagePrefix)
+	return strings.HasPrefix(msg, handshakeMessagePrefix+":")
+}
+
+func isPeerAnnouncement(msg string) bool {
+	return strings.HasPrefix(msg, peerMessagePrefix+":")
 }
 
 func isPing(msg string) bool {
-	return strings.HasPrefix(msg, pingMessagePrefix)
+	return strings.HasPrefix(msg, pingMessagePrefix+":")
 }
 
 func isBye(msg string) bool {
-	return strings.HasPrefix(msg, byeMessagePrefix)
+	return strings.HasPrefix(msg, byeMessagePrefix+":")
 }
 
 func isCommand(msg string) bool {
 	return strings.HasPrefix(msg, "/")
 }
 
+func shouldMaintainOutbound(host HostPeer, peer Peer) bool {
+	return host.Alias < peer.Alias
+}
+
+// main functions
+
 func createServer(host HostPeer) {
 	ln, err := net.Listen(
 		"tcp",
-		host.FormatPort(),
+		host.Addr(),
 	)
 
 	if err != nil {
@@ -120,11 +145,11 @@ func createServer(host HostPeer) {
 			continue
 		}
 
-		go handleServerConnection(conn)
+		go handleServerConnection(conn, host)
 	}
 }
 
-func handleServerConnection(conn net.Conn) {
+func handleServerConnection(conn net.Conn, host HostPeer) {
 	defer conn.Close()
 
 	var alias string
@@ -141,9 +166,29 @@ func handleServerConnection(conn net.Conn) {
 		renewReadDeadline(conn)
 
 		if isHandshake(msg) {
-			msgParts := strings.SplitN(msg, ":", 3)
+			remotePeer, ok := parsePeerMessage(
+				msg,
+				handshakeMessagePrefix,
+			)
 
-			alias = msgParts[1]
+			if !ok {
+				return
+			}
+
+			alias = remotePeer.Alias
+
+			addKnownPeer(remotePeer, host)
+
+			if err := performHandshake(conn, host); err != nil {
+				return
+			}
+
+			sendKnownPeers(conn)
+
+			// para conexões definitivas, o alias menor deve ser quem iniciou.
+			if remotePeer.Alias >= host.Alias {
+				return
+			}
 
 			persistConn(conn, alias)
 
@@ -166,6 +211,19 @@ func handleServerConnection(conn net.Conn) {
 			return
 		}
 
+		if isPeerAnnouncement(msg) {
+			peer, ok := parsePeerMessage(
+				msg,
+				peerMessagePrefix,
+			)
+
+			if ok {
+				addKnownPeer(peer, host)
+			}
+
+			continue
+		}
+
 		fmt.Println(msg)
 	}
 
@@ -177,12 +235,88 @@ func handleServerConnection(conn net.Conn) {
 }
 
 func connectToPeers(host HostPeer) {
-	for _, p := range host.Peers {
-		if shouldSkipConnection(p, host) {
+	for _, peer := range host.Peers {
+		peer := peer
+
+		if shouldMaintainOutbound(host, peer) {
+			startDialer(peer, host)
 			continue
 		}
 
-		go maintainPeerConnection(p, host)
+		go bootstrapPeer(peer, host)
+	}
+}
+
+func exchangeBootstrapDiscovery(
+	conn net.Conn,
+	host HostPeer,
+) error {
+	if err := performHandshake(conn, host); err != nil {
+		return err
+	}
+
+	sendKnownPeers(conn)
+
+	renewReadDeadline(conn)
+
+	scanner := bufio.NewScanner(conn)
+
+	for scanner.Scan() {
+		msg := scanner.Text()
+
+		renewReadDeadline(conn)
+
+		if isHandshake(msg) {
+			remotePeer, ok := parsePeerMessage(
+				msg,
+				handshakeMessagePrefix,
+			)
+
+			if ok {
+				addKnownPeer(remotePeer, host)
+			}
+
+			continue
+		}
+
+		if isPeerAnnouncement(msg) {
+			discoveredPeer, ok := parsePeerMessage(
+				msg,
+				peerMessagePrefix,
+			)
+
+			if ok {
+				addKnownPeer(discoveredPeer, host)
+			}
+
+			continue
+		}
+	}
+
+	return nil
+}
+
+func bootstrapPeer(peer Peer, host HostPeer) {
+	for {
+		conn, err := net.DialTimeout(
+			"tcp",
+			peer.Addr(),
+			networkTimeout,
+		)
+
+		if err != nil {
+			time.Sleep(sleepDuration)
+			continue
+		}
+
+		err = exchangeBootstrapDiscovery(conn, host)
+		conn.Close()
+
+		if err == nil {
+			return
+		}
+
+		time.Sleep(sleepDuration)
 	}
 }
 
@@ -190,7 +324,7 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 	for {
 		conn, err := net.DialTimeout(
 			"tcp",
-			peer.FormatPort(),
+			peer.Addr(),
 			networkTimeout,
 		)
 
@@ -210,6 +344,8 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 			continue
 		}
 
+		sendKnownPeers(conn)
+
 		fmt.Printf("Connection established with %s\n", peer.Alias)
 
 		persistConn(conn, peer.Alias)
@@ -225,9 +361,20 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 
 			renewReadDeadline(conn)
 
-			shouldSkip := isHandshake(msg) || isPing(msg)
+			if isHandshake(msg) || isPing(msg) {
+				continue
+			}
 
-			if shouldSkip {
+			if isPeerAnnouncement(msg) {
+				discoveredPeer, ok := parsePeerMessage(
+					msg,
+					peerMessagePrefix,
+				)
+
+				if ok {
+					addKnownPeer(discoveredPeer, host)
+				}
+
 				continue
 			}
 
@@ -388,4 +535,116 @@ func heartbeatLoop(host HostPeer) {
 
 		time.Sleep(pingTimeout)
 	}
+}
+
+func initializeKnownPeers(host HostPeer) {
+	knownPeersMutex.Lock()
+	defer knownPeersMutex.Unlock()
+
+	for _, peer := range host.Peers {
+		if peer.Alias == "" || peer.Alias == host.Alias {
+			continue
+		}
+
+		knownPeers[peer.Alias] = peer
+	}
+}
+
+func addKnownPeer(peer Peer, host HostPeer) bool {
+	if peer.Alias == "" ||
+		peer.Alias == host.Alias ||
+		peer.Port == "" {
+		return false
+	}
+
+	knownPeersMutex.Lock()
+
+	current, exists := knownPeers[peer.Alias]
+
+	if exists &&
+		current.Address == peer.Address &&
+		current.Port == peer.Port {
+		knownPeersMutex.Unlock()
+		return false
+	}
+
+	knownPeers[peer.Alias] = peer
+	knownPeersMutex.Unlock()
+
+	fmt.Printf(
+		"Peer discovered: %s (%s)\n",
+		peer.Alias,
+		peer.Addr(),
+	)
+
+	maybeStartDialer(peer, host)
+
+	go announcePeer(peer)
+
+	return true
+}
+
+func announcePeer(peer Peer) {
+	tempPeers := copyPeers()
+
+	message := fmt.Sprintf(
+		peerMessageFormat,
+		peer.Alias,
+		peer.Address,
+		peer.Port,
+	)
+
+	for _, conn := range tempPeers {
+		renewWriteDeadline(conn)
+
+		if _, err := conn.Write([]byte(message)); err != nil {
+			conn.Close()
+		}
+	}
+}
+
+func sendKnownPeers(conn net.Conn) {
+	snapshot := copyKnownPeers()
+
+	for _, peer := range snapshot {
+		renewWriteDeadline(conn)
+
+		_, err := fmt.Fprintf(
+			conn,
+			peerMessageFormat,
+			peer.Alias,
+			peer.Address,
+			peer.Port,
+		)
+
+		if err != nil {
+			return
+		}
+	}
+}
+
+func startDialer(peer Peer, host HostPeer) {
+	dialersMutex.Lock()
+
+	if dialers[peer.Alias] {
+		dialersMutex.Unlock()
+		return
+	}
+
+	dialers[peer.Alias] = true
+	dialersMutex.Unlock()
+
+	go maintainPeerConnection(peer, host)
+}
+
+func maybeStartDialer(peer Peer, host HostPeer) {
+	if peer.Alias == host.Alias {
+		return
+	}
+
+	if !shouldMaintainOutbound(host, peer) {
+		return
+	}
+
+	startDialer(peer, host)
 }
