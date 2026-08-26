@@ -11,25 +11,33 @@ import (
 	"time"
 )
 
-const networkTimeout = 10 * time.Second
-const pingTimeout = 3 * time.Second
-const sleepDuration = 5 * time.Second
+const (
+	networkTimeout = 10 * time.Second
+	pingTimeout    = 3 * time.Second
+	sleepDuration  = 5 * time.Second
+)
 
-const listCmd = "/list"
-const quitCmd = "/quit"
-const messageCmd = "/msg "
+const (
+	listCmd = "/list"
+	quitCmd = "/quit"
+	msgCmd  = "/msg " // "msg" ou "msg " para permitir que o alias seja separado do comando
+)
 
-const messageCmdFormat = messageCmd + "%s %s" // alias + message
+const msgCmdFormat = msgCmd + "%s %s" // alias + message
 
-const byeMessagePrefix = "BYE"
-const handshakeMessagePrefix = "HELLO"
-const peerMessagePrefix = "PEER"
-const pingMessagePrefix = "PING"
+const (
+	byeMessagePrefix       = "BYE"
+	handshakeMessagePrefix = "HELLO"
+	peerMessagePrefix      = "PEER"
+	pingMessagePrefix      = "PING"
+)
 
-const byeMessageFormat = byeMessagePrefix + ":%s"                   // alias
-const handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s" // alias + address + port
-const peerMessageFormat = peerMessagePrefix + ":%s:%s:%s"           // alias + address + port
-const pingMessageFormat = pingMessagePrefix + ":%s"                 // alias
+const (
+	byeMessageFormat       = byeMessagePrefix + ":%s"             // alias
+	handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s" // alias + address + port
+	peerMessageFormat      = peerMessagePrefix + ":%s:%s:%s"      // alias + address + port
+	pingMessageFormat      = pingMessagePrefix + ":%s"            // alias
+)
 
 const messageFormat = "[%s] %s" // alias + message
 
@@ -59,8 +67,6 @@ var knownPeersMutex = sync.Mutex{}
 var dialers = make(map[string]bool)
 var dialersMutex = sync.Mutex{}
 
-// helpers
-
 func renewReadDeadline(conn net.Conn) {
 	conn.SetReadDeadline(time.Now().Add(networkTimeout))
 }
@@ -71,6 +77,7 @@ func renewWriteDeadline(conn net.Conn) {
 
 func copyPeers() map[string]*PeerConnection {
 	peersMutex.Lock()
+
 	defer peersMutex.Unlock()
 
 	copy := make(
@@ -139,8 +146,6 @@ func shouldMaintainOutbound(host HostPeer, peer Peer) bool {
 
 	return isPermanentDialer(host.Alias, peer.Alias)
 }
-
-// main functions
 
 func persistConn(conn net.Conn, alias string) *PeerConnection {
 	pc := &PeerConnection{
@@ -592,12 +597,12 @@ func handleCommand(msg string, host HostPeer) {
 		os.Exit(0)
 	}
 
-	if msg == strings.TrimSpace(messageCmd) {
+	if msg == strings.TrimSpace(msgCmd) {
 		fmt.Println("Usage: /msg <alias> <message>")
 		return
 	}
 
-	if strings.HasPrefix(msg, messageCmd) {
+	if strings.HasPrefix(msg, msgCmd) {
 		msgParts := strings.SplitN(msg, " ", 3)
 
 		if len(msgParts) < 3 {
