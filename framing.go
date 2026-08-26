@@ -5,17 +5,11 @@ import (
 	"errors"
 	"io"
 	"net"
-	"sync"
 )
 
 const maxMessageSize = 16 * 1024 * 1024 // 16 MiB
 
-var writeMutex = sync.Mutex{}
-
 func writeFrame(conn net.Conn, payload []byte) error {
-	writeMutex.Lock()
-	defer writeMutex.Unlock()
-
 	if len(payload) > maxMessageSize {
 		return errors.New("message too large")
 	}

@@ -37,8 +37,17 @@ const peerQueueSize = 1024
 
 type PeerConnection struct {
 	Conn   net.Conn
-	SendCh chan []byte // canal de envio
-	Done   chan struct{}
+	SendCh chan []byte   // canal de envio
+	Done   chan struct{} // canal de encerramento
+
+	writeMutex sync.Mutex
+}
+
+func (pc *PeerConnection) write(payload []byte) error {
+	pc.writeMutex.Lock()
+	defer pc.writeMutex.Unlock()
+
+	return writeFrame(pc.Conn, payload)
 }
 
 var peers = make(map[string]*PeerConnection)
@@ -160,7 +169,7 @@ func peerWriter(alias string, pc *PeerConnection) {
 		case payload := <-pc.SendCh:
 			renewWriteDeadline(pc.Conn)
 
-			if err := writeFrame(pc.Conn, payload); err != nil {
+			if err := pc.write(payload); err != nil {
 				removeConnIfCurrent(alias, pc)
 				return
 			}
@@ -573,7 +582,7 @@ func handleCommand(msg string, host HostPeer) {
 		for _, pc := range tempPeers {
 			renewWriteDeadline(pc.Conn)
 
-			if err := writeFrame(pc.Conn, payload); err != nil {
+			if err := pc.write(payload); err != nil {
 				pc.Conn.Close()
 			}
 		}
