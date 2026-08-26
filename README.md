@@ -1,30 +1,67 @@
-# chat
+# Chat
 
-Esse repositório implementa um sistema de chat em tempo real utilizando tecnologias modernas.
-O objetivo é fornecer uma plataforma onde os usuários possam se comunicar instantaneamente,
-seja em grupos ou em conversas privadas.
+CLI de chat peer-to-peer desenvolvida em Go, com foco em simplicidade, portabilidade e configuração objetiva.
 
-## Como usar?
+## Sobre
+
+O projeto permite executar diferentes instâncias de chat a partir de arquivos de configuração em YAML.
+
+A aplicação foi criada para explorar comunicação entre peers utilizando uma base simples, fácil de executar e modificar.
+
+## Requisitos
+
+Para executar a partir do código-fonte:
+
+- Go 1.25+
+- Git
+
+## Instalação
+
+Clone o repositório:
 
 ```bash
-# Clone o repositório
 git clone https://github.com/lemuel-manske/chat.git
-
-# Acesse o diretório do projeto
 cd chat
-
-# Use o executável diretamente
-./chat <config_file> # para linux
-./chat-windows <config_file> # para windows
-
-# Exemplo
-./chat configs/config_kaue.yaml # inicia o chat com as configurações do arquivo config_kaue.yaml
 ```
 
-## Gerando o executável
-
-- certifique-se de ter o Go instalado
+Instale as dependências e compile:
 
 ```bash
-make build
+go mod download
+go build -o chat .
 ```
+
+## Uso
+
+Execute a aplicação informando um arquivo de configuração:
+
+```bash
+./chat configs/config_kaue.yaml
+```
+
+No Windows:
+
+```powershell
+.\chat.exe configs\config_kaue.yaml
+```
+
+Os arquivos de configuração ficam no diretório `configs/`.
+
+## Desenvolvimento
+
+Executar sem gerar um binário:
+
+```bash
+go run . configs/config_kaue.yaml
+```
+
+Executar verificações do projeto:
+
+```bash
+go vet ./...
+go test ./...
+```
+
+## Releases
+
+Versões compiladas para diferentes sistemas operacionais podem ser disponibilizadas pela página de [Releases](https://github.com/lemuel-manske/chat/releases).
