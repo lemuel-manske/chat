@@ -28,6 +28,10 @@ func writeFrame(conn net.Conn, payload []byte) error {
 func readFrame(conn net.Conn) ([]byte, error) {
 	header := make([]byte, 4)
 
+	// aqui está a regra principal do framing:
+	// - identificar tamanho da mensagem
+	// - ler o payload de acordo com o tamanho identificado
+
 	if _, err := io.ReadFull(conn, header); err != nil {
 		return nil, err
 	}
