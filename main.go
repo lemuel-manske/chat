@@ -9,6 +9,7 @@ func main() {
 	go createServer(host)
 	go connectToPeers(host)
 	go broadcastStdin(host)
+	go listenToUnknownPeers(host)
 
 	// virtual thread do JAVA <-> goroutine
 

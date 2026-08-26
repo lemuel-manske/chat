@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+const broadcastAddress = "224.0.0.250"
+const broadcastPort = 9999
+
 const (
 	networkTimeout = 10 * time.Second
 	pingTimeout    = 3 * time.Second
@@ -26,17 +29,19 @@ const (
 const msgCmdFormat = msgCmd + "%s %s" // alias + message
 
 const (
-	byeMessagePrefix       = "BYE" // quit
-	handshakeMessagePrefix = "HELLO" // handshake
-	peerMessagePrefix      = "PEER" // anunciar peers
-	pingMessagePrefix      = "PING" // keep-alive
+	brandNewPeerMessagePrefix = "NEW"   // anunciar peers recém-descobertos
+	byeMessagePrefix          = "BYE"   // quit
+	handshakeMessagePrefix    = "HELLO" // handshake
+	peerMessagePrefix         = "PEER"  // anunciar peers
+	pingMessagePrefix         = "PING"  // keep-alive
 )
 
 const (
-	byeMessageFormat       = byeMessagePrefix + ":%s"             // alias
-	handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s" // alias + address + port
-	peerMessageFormat      = peerMessagePrefix + ":%s:%s:%s"      // alias + address + port
-	pingMessageFormat      = pingMessagePrefix + ":%s"            // alias
+	byeMessageFormat       = byeMessagePrefix + ":%s"                // alias
+	handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s"    // alias + address + port
+	newPeerMessageFormat   = brandNewPeerMessagePrefix + ":%s:%s:%s" // alias + address + port
+	peerMessageFormat      = peerMessagePrefix + ":%s:%s:%s"         // alias + address + port
+	pingMessageFormat      = pingMessagePrefix + ":%s"               // alias
 )
 
 const messageFormat = "[%s] %s" // alias + message
@@ -119,6 +124,10 @@ func performHandshake(conn net.Conn, host HostPeer) error {
 
 func isHandshake(msg string) bool {
 	return strings.HasPrefix(msg, handshakeMessagePrefix+":")
+}
+
+func isBrandNewPeerAnnouncement(msg string) bool {
+	return strings.HasPrefix(msg, brandNewPeerMessagePrefix+":")
 }
 
 func isPeerAnnouncement(msg string) bool {
@@ -311,10 +320,6 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 		if isBye(msg) {
 			fmt.Printf("Connection closed by %s\n", alias)
 
-			if pc != nil {
-				removeConnIfCurrent(alias, pc)
-			}
-
 			return
 		}
 
@@ -345,10 +350,11 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 }
 
 func connectToPeers(host HostPeer) {
+	if len(host.Peers) == 0 {
+		announceMeAsAPeer(host)
+	}
+
 	for _, peer := range host.Peers {
-		// gabriel -> kaue
-		// kaue -> gabriel
-		// ?
 		if shouldMaintainOutbound(host, peer) {
 			startDialer(peer, host)
 
@@ -357,6 +363,31 @@ func connectToPeers(host HostPeer) {
 
 		go bootstrapPeer(peer, host)
 	}
+}
+
+func announceMeAsAPeer(host HostPeer) {
+	addr := &net.UDPAddr{
+		IP:   net.ParseIP(broadcastAddress),
+		Port: broadcastPort,
+	}
+
+	conn, err := net.DialUDP("udp", nil, addr)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	msg := fmt.Sprintf(
+		newPeerMessageFormat,
+		host.Alias,
+		host.Address,
+		host.Port,
+	)
+
+	payload := []byte(msg)
+	conn.Write(payload)
 }
 
 func exchangeBootstrapDiscovery(
@@ -432,6 +463,52 @@ func bootstrapPeer(peer Peer, host HostPeer) {
 	}
 }
 
+func listenToUnknownPeers(host HostPeer) {
+	addr := &net.UDPAddr{
+		IP:   net.ParseIP(broadcastAddress),
+		Port: broadcastPort,
+	}
+
+	conn, err := net.ListenMulticastUDP("udp", nil, addr)
+
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	buffer := make([]byte, 1024)
+
+	for {
+		n, _, err := conn.ReadFromUDP(buffer)
+
+		if err != nil {
+			panic(err)
+		}
+
+		msg := string(buffer[:n])
+
+		if !isBrandNewPeerAnnouncement(msg) {
+			return
+		}
+
+		peer, ok := (parsePeerMessage(
+			msg,
+			brandNewPeerMessagePrefix,
+		))
+
+		if !ok {
+			continue
+		}
+
+		if peer.Alias == host.Alias { // mesmo alias, ignora
+			continue
+		}
+
+		bootstrapPeer(peer, host) // tenta se conectar e descobrir outros peers
+	}
+}
+
 func maintainPeerConnection(peer Peer, host HostPeer) {
 	for {
 		conn, err := net.DialTimeout(
@@ -496,8 +573,6 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 
 			if isBye(msg) {
 				fmt.Printf("Connection closed by %s\n", peer.Alias)
-
-				removeConnIfCurrent(peer.Alias, pc)
 
 				conn.Close()
 

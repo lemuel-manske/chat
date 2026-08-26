@@ -54,6 +54,7 @@ func readFrame(conn net.Conn) ([]byte, error) {
 func writeAll(conn net.Conn, data []byte) error {
 	for len(data) > 0 {
 		n, err := conn.Write(data)
+
 		if err != nil {
 			return err
 		}
