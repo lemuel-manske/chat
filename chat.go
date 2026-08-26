@@ -26,10 +26,10 @@ const (
 const msgCmdFormat = msgCmd + "%s %s" // alias + message
 
 const (
-	byeMessagePrefix       = "BYE"
-	handshakeMessagePrefix = "HELLO"
-	peerMessagePrefix      = "PEER"
-	pingMessagePrefix      = "PING"
+	byeMessagePrefix       = "BYE" // quit
+	handshakeMessagePrefix = "HELLO" // handshake
+	peerMessagePrefix      = "PEER" // anunciar peers
+	pingMessagePrefix      = "PING" // keep-alive
 )
 
 const (
@@ -138,7 +138,7 @@ func isCommand(msg string) bool {
 }
 
 func isPermanentDialer(dialerAlias, listenerAlias string) bool {
-	return dialerAlias < listenerAlias
+	return dialerAlias < listenerAlias // política de desempate por ordem alfabética
 }
 
 func shouldMaintainOutbound(host HostPeer, peer Peer) bool {
@@ -346,6 +346,9 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 
 func connectToPeers(host HostPeer) {
 	for _, peer := range host.Peers {
+		// gabriel -> kaue
+		// kaue -> gabriel
+		// ?
 		if shouldMaintainOutbound(host, peer) {
 			startDialer(peer, host)
 
@@ -365,8 +368,6 @@ func exchangeBootstrapDiscovery(
 	}
 
 	sendKnownPeers(conn)
-
-	renewReadDeadline(conn)
 
 	for {
 		renewReadDeadline(conn)

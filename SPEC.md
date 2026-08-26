@@ -8,17 +8,7 @@ Cada instância da aplicação é, ao mesmo tempo, servidor e cliente: escuta co
 
 ## Ponto de partida:
 
-A aplicação `SocketChat`, disponibilizada em aula, estabelece uma conexão TCP direta entre exatamente dois pares, com delimitação de mensagens por prefixo de tamanho.
-Vocês podem reaproveitar integralmente o código de framing e de estabelecimento de conexão. O que muda é tudo o que decorre de existirem muitos pares e de nenhum deles ter uma visão
-privilegiada do sistema.
-
-### Arquitetura exigida:
-- Toda instância abre uma porta de escuta e aceita conexões de entrada.
-- Toda instância pode iniciar conexões de saída para outros pares.
-- A comunicação entre dois pares acontece diretamente, sem intermediário.
-- Não é permitido eleger um nó como servidor, coordenador ou repositório da lista de participantes.
-
-Restrição de tecnologia: apenas a classe Socket sobre TCP. Não é permitido usar SignalR, gRPC, WebSocket, MQTT, bibliotecas de P2P prontas, filas de mensagens ou banco de dados compartilhado
+Ver [especificação](./SPEC.md).
 
 ## Requisitos:
 

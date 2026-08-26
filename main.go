@@ -10,5 +10,7 @@ func main() {
 	go connectToPeers(host)
 	go broadcastStdin(host)
 
+	// virtual thread do JAVA <-> goroutine
+
 	select {}
 }
