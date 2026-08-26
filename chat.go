@@ -342,6 +342,7 @@ func connectToPeers(host HostPeer) {
 	for _, peer := range host.Peers {
 		if shouldMaintainOutbound(host, peer) {
 			startDialer(peer, host)
+
 			continue
 		}
 
@@ -752,6 +753,18 @@ func sendKnownPeers(conn net.Conn) {
 	}
 }
 
+func maybeStartDialer(peer Peer, host HostPeer) {
+	if peer.Alias == host.Alias {
+		return
+	}
+
+	if !shouldMaintainOutbound(host, peer) {
+		return
+	}
+
+	startDialer(peer, host)
+}
+
 func startDialer(peer Peer, host HostPeer) {
 	dialersMutex.Lock()
 
@@ -764,16 +777,4 @@ func startDialer(peer Peer, host HostPeer) {
 	dialersMutex.Unlock()
 
 	go maintainPeerConnection(peer, host)
-}
-
-func maybeStartDialer(peer Peer, host HostPeer) {
-	if peer.Alias == host.Alias {
-		return
-	}
-
-	if !shouldMaintainOutbound(host, peer) {
-		return
-	}
-
-	startDialer(peer, host)
 }
