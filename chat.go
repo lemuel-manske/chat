@@ -130,10 +130,14 @@ func isCommand(msg string) bool {
 	return strings.HasPrefix(msg, "/")
 }
 
+func isPermanentDialer(dialerAlias, listenerAlias string) bool {
+	return dialerAlias < listenerAlias
+}
+
 func shouldMaintainOutbound(host HostPeer, peer Peer) bool {
 	// para conexões definitivas, o alias menor deve ser quem iniciou (alfabeticamente)
 
-	return host.Alias < peer.Alias
+	return isPermanentDialer(host.Alias, peer.Alias)
 }
 
 // main functions
@@ -253,8 +257,6 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 	var alias string
 	var pc *PeerConnection
 
-	renewReadDeadline(conn)
-
 	for {
 		renewReadDeadline(conn)
 
@@ -286,8 +288,7 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 
 			sendKnownPeers(conn)
 
-			// para conexões definitivas, o alias menor deve ser quem iniciou.
-			if remotePeer.Alias >= host.Alias {
+			if !isPermanentDialer(remotePeer.Alias, host.Alias) {
 				return
 			}
 
