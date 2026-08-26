@@ -19,21 +19,19 @@ const listCmd = "/list"
 const quitCmd = "/quit"
 const messageCmd = "/msg "
 
-const messageCmdFormat = messageCmd + "%s %s\n" // alias + message
-
-const pingMessagePrefix = "PING"
-const pingMessageFormat = pingMessagePrefix + ":%s\n" // alias
+const messageCmdFormat = messageCmd + "%s %s" // alias + message
 
 const byeMessagePrefix = "BYE"
-const byeMessageFormat = byeMessagePrefix + ":%s\n" // alias
-
 const handshakeMessagePrefix = "HELLO"
-const handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s\n" // alias + address + port
-
 const peerMessagePrefix = "PEER"
-const peerMessageFormat = peerMessagePrefix + ":%s:%s:%s\n" // alias + address + port
+const pingMessagePrefix = "PING"
 
-const messageFormat = "[%s] %s\n" // alias + message
+const byeMessageFormat = byeMessagePrefix + ":%s"                   // alias
+const handshakeMessageFormat = handshakeMessagePrefix + ":%s:%s:%s" // alias + address + port
+const peerMessageFormat = peerMessagePrefix + ":%s:%s:%s"           // alias + address + port
+const pingMessageFormat = pingMessagePrefix + ":%s"                 // alias
+
+const messageFormat = "[%s] %s" // alias + message
 
 var peers = make(map[string]net.Conn)
 var peersMutex = sync.Mutex{}
@@ -98,8 +96,7 @@ func performHandshake(conn net.Conn, host HostPeer) error {
 
 	renewWriteDeadline(conn)
 
-	_, err := conn.Write([]byte(handshake))
-	return err
+	return writeFrame(conn, []byte(handshake))
 }
 
 func isHandshake(msg string) bool {
@@ -156,14 +153,18 @@ func handleServerConnection(conn net.Conn, host HostPeer) {
 
 	renewReadDeadline(conn)
 
-	scanner := bufio.NewScanner(conn)
-
 	gracefulClose := false
 
-	for scanner.Scan() {
-		msg := scanner.Text()
-
+	for {
 		renewReadDeadline(conn)
+
+		payload, err := readFrame(conn)
+
+		if err != nil {
+			break
+		}
+
+		msg := string(payload)
 
 		if isHandshake(msg) {
 			remotePeer, ok := parsePeerMessage(
@@ -259,12 +260,16 @@ func exchangeBootstrapDiscovery(
 
 	renewReadDeadline(conn)
 
-	scanner := bufio.NewScanner(conn)
-
-	for scanner.Scan() {
-		msg := scanner.Text()
-
+	for {
 		renewReadDeadline(conn)
+
+		payload, err := readFrame(conn)
+
+		if err != nil {
+			return err
+		}
+
+		msg := string(payload)
 
 		if isHandshake(msg) {
 			remotePeer, ok := parsePeerMessage(
@@ -292,8 +297,6 @@ func exchangeBootstrapDiscovery(
 			continue
 		}
 	}
-
-	return nil
 }
 
 func bootstrapPeer(peer Peer, host HostPeer) {
@@ -352,12 +355,16 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 
 		renewReadDeadline(conn)
 
-		scanner := bufio.NewScanner(conn)
-
 		gracefulClose := false
 
-		for scanner.Scan() {
-			msg := scanner.Text()
+		for {
+			payload, err := readFrame(conn)
+
+			if err != nil {
+				break
+			}
+
+			msg := string(payload)
 
 			renewReadDeadline(conn)
 
@@ -406,37 +413,48 @@ func maintainPeerConnection(peer Peer, host HostPeer) {
 }
 
 func broadcastStdin(host HostPeer) {
-	scanner := bufio.NewScanner(os.Stdin)
+	reader := bufio.NewReader(os.Stdin)
 
-	for scanner.Scan() {
-		text := scanner.Text()
+	for {
+		text, err := reader.ReadString('\n')
+
+		if err != nil && len(text) == 0 {
+			return
+		}
+
+		text = strings.TrimSuffix(text, "\n")
+		text = strings.TrimSuffix(text, "\r")
 
 		if isCommand(text) {
 			handleCommand(text, host)
-
-			continue
+		} else {
+			broadcastMessage(text, host)
 		}
 
-		tempPeers := copyPeers()
-
-		for _, conn := range tempPeers {
-			renewWriteDeadline(conn)
-
-			_, err := fmt.Fprintf(
-				conn,
-				messageFormat,
-				host.Alias,
-				text,
-			)
-
-			if err != nil {
-				conn.Close()
-			}
+		if err != nil {
+			return
 		}
 	}
+}
 
-	if scanner.Err() != nil {
-		os.Exit(1)
+func broadcastMessage(text string, host HostPeer) {
+	tempPeers := copyPeers()
+
+	message := fmt.Sprintf(
+		messageFormat,
+		host.Alias,
+		text,
+	)
+
+	for _, conn := range tempPeers {
+		renewWriteDeadline(conn)
+
+		if err := writeFrame(
+			conn,
+			[]byte(message),
+		); err != nil {
+			conn.Close()
+		}
 	}
 }
 
@@ -457,13 +475,15 @@ func handleCommand(msg string, host HostPeer) {
 		for _, conn := range tempPeers {
 			renewWriteDeadline(conn)
 
-			_, err := fmt.Fprintf(
-				conn,
+			payload := fmt.Sprintf(
 				byeMessageFormat,
 				host.Alias,
 			)
 
-			if err != nil {
+			if err := writeFrame(
+				conn,
+				[]byte(payload),
+			); err != nil {
 				conn.Close()
 			}
 		}
@@ -498,14 +518,18 @@ func handleCommand(msg string, host HostPeer) {
 
 		renewWriteDeadline(conn)
 
-		_, err := fmt.Fprintf(
-			conn,
+		payload := fmt.Sprintf(
 			messageFormat,
 			host.Alias,
 			message,
 		)
 
-		if err != nil {
+		renewWriteDeadline(conn)
+
+		if err := writeFrame(
+			conn,
+			[]byte(payload),
+		); err != nil {
 			conn.Close()
 		}
 
@@ -522,13 +546,15 @@ func heartbeatLoop(host HostPeer) {
 		for _, conn := range tempPeers {
 			renewWriteDeadline(conn)
 
-			_, err := fmt.Fprintf(
-				conn,
+			payload := fmt.Sprintf(
 				pingMessageFormat,
 				host.Alias,
 			)
 
-			if err != nil {
+			if err := writeFrame(
+				conn,
+				[]byte(payload),
+			); err != nil {
 				conn.Close()
 			}
 		}
@@ -597,7 +623,10 @@ func announcePeer(peer Peer) {
 	for _, conn := range tempPeers {
 		renewWriteDeadline(conn)
 
-		if _, err := conn.Write([]byte(message)); err != nil {
+		if err := writeFrame(
+			conn,
+			[]byte(message),
+		); err != nil {
 			conn.Close()
 		}
 	}
@@ -607,17 +636,19 @@ func sendKnownPeers(conn net.Conn) {
 	snapshot := copyKnownPeers()
 
 	for _, peer := range snapshot {
-		renewWriteDeadline(conn)
-
-		_, err := fmt.Fprintf(
-			conn,
+		message := fmt.Sprintf(
 			peerMessageFormat,
 			peer.Alias,
 			peer.Address,
 			peer.Port,
 		)
 
-		if err != nil {
+		renewWriteDeadline(conn)
+
+		if err := writeFrame(
+			conn,
+			[]byte(message),
+		); err != nil {
 			return
 		}
 	}
